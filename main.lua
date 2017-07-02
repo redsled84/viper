@@ -3,15 +3,14 @@
                    LIBRARIES
 =================================================
 ]]
-local inspect = require 'inspect'
 local bump = require 'bump'
+local inspect = require 'inspect'
 
 --[[
 =================================================
               useful global vars
 =================================================
 ]]
-WORLD = bump.newWorld()
 GRAVITY = 600
 KEYS = {
   ['a'] = false,       -- Move left
@@ -20,6 +19,11 @@ KEYS = {
   ['s'] = false,       -- Move down on ladder, drop through platform
   ['escape'] = false,  -- Quit the game / TODO: Change to menu
 }
+WORLD = bump.newWorld()
+
+-- Different velocity constants
+frc, acc, dec, top, low = 300, 400, 3500, 350, 50
+maxFallVelocity = 325
 
 --[[
 =================================================
@@ -31,30 +35,85 @@ KEYS = {
 ]]
 player = {}
 
+function player:applyVelocities(dt)
+  self:setPosition(self.x + self.vx * dt, self.y + self.vy * dt)
+end
+
+function player:collision(dt)
+  -- Gather calculated values
+  local futureX, futureY = self.x + (self.vx * dt), self.y + (self.vy * dt)
+  local nextX, nextY, cols, len = WORLD:move(self, futureX, futureY)
+
+  -- Loop collision map
+  for i=1, len do
+    local col = cols[i]
+    -- TODO: add logic for interacting with moving platforms?
+    if col.normal.x ~= 0 then
+      self:setVel(0)
+    end
+    if col.normal.y ~= 0 then
+      self:setVel(nil, 0)
+    end
+  end
+
+  -- Set position to calculated positions
+  self:setPosition(nextX, nextY)
+end
+
 function player:init(x, y, vx, vy, width, height, state)
   -- mutable variables
-  self.x = x
-  self.y = y
+  self.jumpCounter = 0
+  self.height = height
+  self.state = state or 'idle'
   self.vx = vx
   self.vy = vy
   self.width = width
-  self.height = height
-  self.state = state or 'idle'
-  self.jumpCounter = 0
+  self.x = x
+  self.y = y
   -- draw level
   self.z = 1
 
   -- constants
-  self.speed = 350
-  self.jump = -290
-  self.turnAround = 60
   self.colors = {140, 255, 235}
+  self.jumpvel = -290
+  self.maxJumps = 2
   self.objectType = 'dynamic'
 end
 
-function player:setVelocities(vx, vy)
-  self.vx = vx or self.vx
-  self.vy = vy or self.vy
+function player:jump()
+  if KEYS['w'] and self.jumpCounter < self.maxJumps then
+    self:setVel(nil, self.jumpvel)
+    self.jumpCounter = self.jumpCounter + 1
+    KEYS['w'] = false
+  end
+end
+
+function player:move(dt)
+  local vx, vy = self.vx, self.vy
+
+  if KEYS['a'] then
+    if vx > 0 then
+      vx = vx - dec * dt
+    elseif vx > -top then
+      vx = vx - acc * dt
+    end
+  elseif KEYS['d'] then
+    if vx < 0 then
+      vx = vx + dec * dt
+    elseif vx < top then
+      vx = vx + acc * dt
+    end
+  else
+    if math.abs(vx) < low then
+      vx = 0
+    elseif vx > 0 then
+      vx = vx - frc * dt
+    elseif vx < 0 then
+      vx = vx + frc * dt
+    end
+  end
+
+  self:setVel(vx, vy)
 end
 
 function player:setPosition(x, y)
@@ -62,27 +121,9 @@ function player:setPosition(x, y)
   self.y = y
 end
 
-function player:move(dt)
-  if KEYS['a'] then
-    if self.vx > 0 then
-      self:setVelocities(-self.turnAround)
-    end
-    self:setVelocities(self.vx - self.speed * dt)
-  end
-  if KEYS['d'] then
-    if self.vx < 0 then
-      self:setVelocities(self.turnAround)
-    end
-    self:setVelocities(self.vx + self.speed * dt)
-  end
-  if KEYS['w'] and self.jumpCounter <= 1 then
-    self.vy = self.jump
-    self.jumpCounter = self.jumpCounter + 1
-  end
-end
-
-function player:applyVelocities(dt)
-  self:setPosition(self.x + self.vx * dt, self.y + self.vy * dt)
+function player:setVel(vx, vy)
+  self.vx = vx or self.vx
+  self.vy = vy or self.vy
 end
 
 function player:updateState()
@@ -103,27 +144,6 @@ function player:updateState()
   end
 end
 
-function player:collision(dt)
-  -- Gather calculated values
-  local futureX, futureY = self.x + (self.vx * dt), self.y + (self.vy * dt)
-  local nextX, nextY, cols, len = WORLD:move(self, futureX, futureY)
-
-  -- Loop collision map
-  for i=1, len do
-    local col = cols[i]
-    -- TODO: add logic for interacting with moving platforms?
-    if col.normal.x ~= 0 then
-      self:setVelocities(0)
-    end
-    if col.normal.y ~= 0 then
-      self:setVelocities(nil, 0)
-    end
-  end
-
-  -- Set position to calculated positions
-  self:setPosition(nextX, nextY)
-end
-
 --[[
 =================================================
               Misc util functions
@@ -132,15 +152,17 @@ end
 function applyGravity(objects, dt)
   for _, v in pairs(objects) do
     if v.objectType ~= 'static' then
-      v.vy = v.vy + GRAVITY * dt
+      if v.vy < maxFallVelocity then
+        v.vy = v.vy + GRAVITY * dt
+      else
+        v.vy = maxFallVelocity
+      end
     end
   end
 end
 
-function initWorldObjects(objects)
-  for _, v in pairs(objects) do
-    WORLD:add(v, v.x, v.y, v.width, v.height)
-  end
+function debugprint()
+  print(player.state, player.jumpCounter)
 end
 
 function drawObjects(objects)
@@ -151,11 +173,20 @@ function drawObjects(objects)
   end
 end
 
+function initWorldObjects(objects)
+  for _, v in pairs(objects) do
+    WORLD:add(v, v.x, v.y, v.width, v.height)
+  end
+end
+
 --[[
 =================================================
                 MAIN FUNCTIONS                 
 =================================================
 --]]
+function love.draw()
+  drawObjects(objects)
+end
 
 function love.load()
   local SPAWN = {
@@ -166,24 +197,6 @@ function love.load()
   objects = {player, {x=0, y=350, width=love.graphics.getWidth()*(2/5), height=50, objectType='static'}}
 
   initWorldObjects(objects)
-end
-
-function love.update(dt)
-  player:move(dt)
-  player:applyVelocities(dt)
-  player:collision(dt)
-  -- state must be updated after collision calculations
-  player:updateState()
-  
-  -- debug section aka printing to console
-  print(player.state)
-
-  -- apply gravity to objects
-  applyGravity(objects, dt)
-end
-
-function love.draw()
-  drawObjects(objects)
 end
 
 function love.keypressed(key) 
@@ -204,4 +217,19 @@ function love.keyreleased(key)
   if key == 'escape' then
     love.event.quit()
   end
+end
+
+function love.update(dt)
+  player:move(dt)
+  player:applyVelocities(dt)
+  player:collision(dt)
+  -- state must be updated after collision calculations
+  player:updateState()
+  player:jump()
+  
+  -- apply gravity to objects
+  applyGravity(objects, dt)
+
+  -- debug section aka printing to console
+  debugprint()
 end
