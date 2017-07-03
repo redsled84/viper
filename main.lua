@@ -20,6 +20,10 @@ KEYS = {
   ['escape'] = false,  -- Quit the game / TODO: Change to menu
 }
 WORLD = bump.newWorld()
+-- OBJECT types:
+--   * 'static' - only collision and collision behaviors
+--   * 'dynamic' - is subject to gravity and velocity changes
+OBJECTS = {}
 
 -- Different velocity constants
 frc, acc, dec, top, low = 300, 400, 3500, 350, 50
@@ -30,7 +34,6 @@ maxFallVelocity = 325
                   Player :-)
 
   States: 'idle', 'walk', 'jump', 'fall', 'die'
-        Object types: 'static', 'dynamic' 
 =================================================
 ]]
 player = {}
@@ -165,6 +168,10 @@ function debugprint()
   print(player.state, player.jumpCounter)
 end
 
+function distance(x1, y1, x2, y2)
+  return math.sqrt( (x2 - x1)^2 + (y2 - y1)^2 )
+end
+
 function drawObjects(objects)
   for _, v in pairs(objects) do
     local colors = v.colors or {255,255,255}
@@ -185,7 +192,7 @@ end
 =================================================
 --]]
 function love.draw()
-  drawObjects(objects)
+  drawObjects(OBJECTS)
 end
 
 function love.load()
@@ -194,9 +201,9 @@ function love.load()
     y = 0
   }
   player:init(SPAWN.x, SPAWN.y, 0, 0, 32, 32)
-  objects = {player, {x=0, y=350, width=love.graphics.getWidth()*(2/5), height=50, objectType='static'}}
+  OBJECTS = {player, {x=0, y=350, width=love.graphics.getWidth()*(2/5), height=50, objectType='static'}}
 
-  initWorldObjects(objects)
+  initWorldObjects(OBJECTS)
 end
 
 function love.keypressed(key) 
@@ -227,9 +234,9 @@ function love.update(dt)
   player:updateState()
   player:jump()
   
-  -- apply gravity to objects
-  applyGravity(objects, dt)
+  -- apply gravity to OBJECTS
+  applyGravity(OBJECTS, dt)
 
   -- debug section aka printing to console
-  debugprint()
+  -- debugprint()
 end
