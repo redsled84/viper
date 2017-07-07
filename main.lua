@@ -23,7 +23,12 @@ WORLD = bump.newWorld()
 -- OBJECT types:
 --   * 'static' - only collision and collision behaviors
 --   * 'dynamic' - is subject to gravity and velocity changes
-OBJECTS = {}
+MAP_OBJECTS = {}
+-- Maps
+MAP_BASE_PATH = 'maps/'
+MAP_CURRENT = require 'maps/map1'
+-- Tilesize
+TILESIZE = 16
 
 -- Different velocity constants
 frc, acc, dec, top, low = 300, 400, 3500, 350, 50
@@ -50,7 +55,7 @@ function player:collision(dt)
   -- Loop collision map
   for i=1, len do
     local col = cols[i]
-    -- TODO: add logic for interacting with moving platforms?
+    -- TODO: add logic for interacting with different objects
     if col.normal.x ~= 0 then
       self:setVel(0)
     end
@@ -65,6 +70,7 @@ end
 
 function player:init(x, y, vx, vy, width, height, state)
   -- mutable variables
+  self.name = 'player'
   self.jumpCounter = 0
   self.height = height
   self.state = state or 'idle'
@@ -78,7 +84,7 @@ function player:init(x, y, vx, vy, width, height, state)
 
   -- constants
   self.colors = {140, 255, 235}
-  self.jumpvel = -290
+  self.jumpvel = -175
   self.maxJumps = 2
   self.objectType = 'dynamic'
 end
@@ -176,8 +182,24 @@ function drawObjects(objects)
   for _, v in pairs(objects) do
     local colors = v.colors or {255,255,255}
     love.graphics.setColor(unpack(colors))
-    love.graphics.rectangle('fill', v.x, v.y, v.width, v.height)
+    if v.name == 'solid' or v.name == 'player' then
+      love.graphics.rectangle('fill', v.x, v.y, v.width, v.height)
+    end
   end
+end
+
+function getPlayerSpawn(mapObjects)
+  local x, y
+  for _, v in pairs(mapObjects) do
+    if v.name == 'spawn' then
+      x = v.x
+      y = v.y
+    end
+  end
+  if not x and not y then
+    error('No player spawn object')
+  end
+  return x, y
 end
 
 function initWorldObjects(objects)
@@ -186,24 +208,75 @@ function initWorldObjects(objects)
   end
 end
 
+function loadCurrentMapObjects(map)
+  local mapObjects = {}
+  for y=1, #MAP_CURRENT do
+    local row = MAP_CURRENT[y]
+    for x=1, #row do
+      local num = row[x]
+      local ox, oy = x-1, y-1
+      local o = {}
+      o.x = ox * TILESIZE
+      o.y = oy * TILESIZE
+      o.width = TILESIZE
+      o.height = TILESIZE
+      -- object type defaults to static
+      o.objectType = 'static'
+      if num == 1 then
+        o.name = 'solid'
+      elseif num == 2 then
+        o.name = 'floater'
+      elseif num == 3 then
+        o.name = 'objective'
+      elseif num == 4 then
+        o.name = 'ladder'
+      elseif num == 6 then
+        o.name = 'bounce'
+      elseif num == 7 then
+        o.name = 'hidden'
+      elseif num == 8 then
+        o.name = 'spawn'
+      end
+      if o.name then
+        table.insert(mapObjects, o)
+      end
+    end
+  end
+  return mapObjects
+end
+
 --[[
 =================================================
                 MAIN FUNCTIONS                 
 =================================================
 --]]
-function love.draw()
-  drawObjects(OBJECTS)
-end
 
 function love.load()
-  local SPAWN = {
-    x = 0,
-    y = 0
-  }
-  player:init(SPAWN.x, SPAWN.y, 0, 0, 32, 32)
-  OBJECTS = {player, {x=0, y=350, width=love.graphics.getWidth()*(2/5), height=50, objectType='static'}}
+  MAP_OBJECTS = loadCurrentMapObjects(MAP_CURRENT)
+  local spawnX, spawnY = getPlayerSpawn(MAP_OBJECTS)
+  player:init(spawnX, spawnY, 0, 0, TILESIZE, TILESIZE)
+  table.insert(MAP_OBJECTS, player)
+  initWorldObjects(MAP_OBJECTS)
+end
 
-  initWorldObjects(OBJECTS)
+function love.draw()
+  drawObjects(MAP_OBJECTS)
+end
+
+
+function love.update(dt)
+  player:move(dt)
+  player:applyVelocities(dt)
+  player:collision(dt)
+  -- state must be updated after collision calculations
+  player:updateState()
+  player:jump()
+  
+  -- apply gravity to OBJECTS
+  applyGravity(MAP_OBJECTS, dt)
+
+  -- debug section aka printing to console
+  -- debugprint()
 end
 
 function love.keypressed(key) 
@@ -224,19 +297,4 @@ function love.keyreleased(key)
   if key == 'escape' then
     love.event.quit()
   end
-end
-
-function love.update(dt)
-  player:move(dt)
-  player:applyVelocities(dt)
-  player:collision(dt)
-  -- state must be updated after collision calculations
-  player:updateState()
-  player:jump()
-  
-  -- apply gravity to OBJECTS
-  applyGravity(OBJECTS, dt)
-
-  -- debug section aka printing to console
-  -- debugprint()
 end
