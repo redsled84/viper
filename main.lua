@@ -15,6 +15,7 @@ local Camera = require 'camera'
               useful global vars
 =================================================
 ]]
+MAX_BULLET_DISTANCE = 1000
 GRAVITY = 600
 KEYS = {
   ['a'] = false,       -- Move left
@@ -56,7 +57,7 @@ playerImage = love.graphics.newImage('player.jpg')
 
 -- collision filter for WORLD:move
 local function collisionFilter(item, other)
-  if other.name == 'spawn' or other.name == 'objective' then
+  if other.name == 'spawn' or other.name == 'objective' or other.name == 'bullet' then
     return 'cross'
   end
   return 'slide'
@@ -67,9 +68,9 @@ end
                   Bullets!
 =================================================
 ]]
-bullet = {}
+bullets = {}
 
-function bullet.new(x1, y1, x2, y2, width, height, vel)
+function bullets.new(x1, y1, x2, y2, width, height, vel)
   local b = {
     x1=x1,
     y1=y1,
@@ -84,13 +85,15 @@ function bullet.new(x1, y1, x2, y2, width, height, vel)
     directionX=0,
     directionY=0,
     name='bullet',
-    state='moving',
+    state='active',
+    objectType='dynamic',
+    damage=10,
   }
   WORLD:add(b, x1, y1, width, height)
   return b
 end
 
-function bullet.update(b, dt)
+function bullets.move(b, dt)
   local hit = false
 
   b.directionX = b.dx / b.dist
@@ -102,8 +105,17 @@ function bullet.update(b, dt)
 
   for i=1, len do
     local col = cols[i]
-    if col.type == 'slide' then
+    if col.type == 'slide' and col.other.name ~= 'player' then
       hit = true
+    end
+    if col.other.name == 'hidden' then
+      col.other.state = 'dead'
+    end
+    if col.other.name == 'floater' then
+      col.other.health = col.other.health - b.damage
+      if col.other.health < 0 then
+        col.other.state = 'dead'
+      end
     end
   end
 
@@ -111,6 +123,15 @@ function bullet.update(b, dt)
   b.y1 = goalY
 
   return hit
+end
+
+function bullets.updateAll(objects, dt)
+  loopSpecificObjects(objects, 'bullet', function(i, v)
+    local hit = bullets.move(v, dt)
+    if hit then
+      v.state = 'dead'
+    end
+  end)
 end
 
 --[[
@@ -147,6 +168,11 @@ function player:collision(dt)
       self:setVel(nil, self.jumpVel*1.8)
     end
 
+    if col.other.name == 'objective' and self.health ~= self.maxHealth then
+      self:increaseHealth(true, col.other.buff)
+      col.other.state = 'dead'
+    end
+
     if col.other.name == 'ladder' and (col.normal.x == 1 or col.normal.x == -1) then
       if KEYS['a'] or KEYS['d'] then
         self:setVel(nil, self.climbVel)
@@ -159,9 +185,29 @@ function player:collision(dt)
   self:setPosition(nextX, nextY)
 end
 
-function player:decreaseHealth(decrement, dt)
-  self.health = self.health - decrement * dt
-  if self.health <= 0 then
+function player:increaseHealth(increaseOnce, increment, dt)
+  if increaseOnce then
+    self.health = self.health + increment
+  else
+    self.health = self.health + increment * dt
+  end
+  if self.health > self.maxHealth then
+    self.health = self.maxHealth
+  end
+end
+
+function player:decreaseHealth(decreaseOnce, decrement, dt)
+  -- Difference between 'health - decrement * dt' and
+  -- 'health - decrement' is that the former will be used
+  -- only to decrease health multiple times (called in update)
+  -- whereas the latter will be used in removing health once
+  -- (not constantly updated)
+  if decreaseOnce then
+    self.health = self.health - decrement
+  else
+    self.health = self.health - decrement * dt
+  end
+  if self.health < 0 then
     self.health = 0
     self.state = 'dead'
   end
@@ -179,15 +225,15 @@ function player:init(x, y, vx, vy, width, height, state)
   self.x = x
   self.y = y
   -- draw level
-  self.z = 1
-  self.health = 100
-  -- bullets table
-  self.bullets = {}
+  -- self.z = 1
+  local h = 100
+  self.health = h
+  self.maxHealth = h
 
   -- constants
   self.colors = {255,255,255}
   self.climbVel = -80
-  self.bulletVel = 500
+  self.bulletVel = 800
   self.jumpVel = -250
   self.maxJumps = 2
   self.objectType = 'dynamic'
@@ -239,55 +285,66 @@ function player:setVel(vx, vy)
   self.vy = vy or self.vy
 end
 
-function player:shoot()
+function player:shoot(objects)
   local b
   local x1, y1, x2, y2
   local w, h = 4, 4
-  local bufferSpace = 3
+  local bufferSpace = 6
   if KEYS['right'] then
     x1 = self.x + self.width + bufferSpace
     x2 = x1 + 10
     y1 = self.y + self.height / 2
     y2 = y1
-    b = bullet.new(x1, y1, x2, y2, w, h, self.bulletVel)
-    b.vel = self.bulletVel
+    local vel
+    if self.vx < 0 then
+      vel = self.bulletVel
+    else
+      vel = self.vx + self.bulletVel
+    end
+    b = bullets.new(x1, y1, x2, y2, w, h, vel)
     KEYS['right'] = false
   elseif KEYS['left'] then
-    x1 = self.x - bufferSpace
+    x1 = self.x - w - bufferSpace
     x2 = x1 - 10
     y1 = self.y + self.height / 2
     y2 = y1
-    b = bullet.new(x1, y1, x2, y2, w, h, self.bulletVel)
-    b.vel = -self.bulletVel
+    local vel
+    if self.vx > 0 then
+      vel = self.bulletVel
+    else
+      vel = math.abs(self.vx) + self.bulletVel
+    end
+    b = bullets.new(x1, y1, x2, y2, w, h, vel)
     KEYS['left'] = false
   elseif KEYS['up'] then
     x1 = self.x + self.width / 2
     x2 = x1
     y1 = self.y - bufferSpace
     y2 = y1 - 10
-    b = bullet.new(x1, y1, x2, y2, w, h, self.bulletVel)
-    b.vel = self.bulletVel
+    local vel
+    if self.vy < 0 then
+      vel = self.bulletVel
+    else
+      vel = math.abs(self.vy) + self.bulletVel
+    end
+    b = bullets.new(x1, y1, x2, y2, w, h, self.bulletVel)
     KEYS['up'] = false
   elseif KEYS['down'] then
     x1 = self.x + self.width / 2
     x2 = x1
     y1 = self.y + self.height + bufferSpace
     y2 = y1 + 10
-    b = bullet.new(x1, y1, x2, y2, w, h, self.bulletVel)
-    b.vel = self.bulletVel
+    local vel
+    if self.vy < 0 then
+      vel = self.bulletVel
+    else
+      vel = math.abs(self.vy) + self.bulletVel
+    end
+    b = bullets.new(x1, y1, x2, y2, w, h, self.bulletVel)
     KEYS['down'] = false
   end
   if b then
-    self.bullets[#self.bullets+1] = b
-  end
-end
-
-function player:updateBullets(dt)
-  for _, b in pairs(self.bullets) do
-    local hitSomething = bullet.update(b, dt)
-    if hitSomething then
-      b.state = 'dead'
-    end
+    objects[#objects+1] = b
   end
 end
 
@@ -317,25 +374,8 @@ function player:drawHealthBar()
   local healthBarWidth = 40
   local healthBarHeight = 10
   love.graphics.setColor(0,255,0)
-  love.graphics.rectangle('fill', player.x - 8, player.y - healthBarHeight - 3, healthBarWidth * healthRatio, healthBarHeight)
-end
-
-function player:autoRemoveDeadBullets()
-  for i=#self.bullets, 1, -1 do
-    local b = self.bullets[i]
-    if b then
-      if b.state == 'dead' then
-        self.bullets[i] = nil
-      end
-    end
-  end
-end
-
-function player:drawBullets()
-  for _, v in pairs(self.bullets) do
-    love.graphics.setColor(255,255,0)
-    love.graphics.rectangle('fill', v.x1, v.y1, v.width, v.height)
-  end
+  love.graphics.rectangle('fill', player.x - 8, player.y - healthBarHeight - 3,
+    healthBarWidth * healthRatio, healthBarHeight)
 end
 
 --[[
@@ -345,7 +385,7 @@ end
 ]]
 function applyGravity(objects, dt)
   for _, v in pairs(objects) do
-    if v.objectType ~= 'static' then
+    if v.objectType ~= 'static' and v.name ~= 'bullet' then
       if v.vy < maxFallVelocity then
         v.vy = v.vy + GRAVITY * dt
       else
@@ -355,12 +395,14 @@ function applyGravity(objects, dt)
   end
 end
 
-function debugprint()
-  -- print(#player.bullets)
+function debugprint(dt)
+  loopSpecificObjects(MAP_OBJECTS, 'floater', function(i, v)
+    print(inspect(v))
+  end)
 end
 
 function distance(x1, y1, x2, y2)
-  return math.sqrt( (x2 - x1)^2 + (y2 - y1)^2 )
+  return math.sqrt((x2 - x1)^2 + (y2 - y1)^2)
 end
 
 -- easy draw function
@@ -376,8 +418,8 @@ function drawObjects(objects)
       love.graphics.setColor(unpack(colors))
     elseif v.name == 'floater' then
       -- remove circle drawing in real gameplay
-      love.graphics.setColor(100,100,100)
-      love.graphics.circle('line', v.x+v.width/2, v.y+v.height/2, v.radius)
+      -- love.graphics.setColor(100,100,100)
+      -- love.graphics.circle('line', v.x+v.width/2, v.y+v.height/2, v.radius)
       -- Red is obviously hostile
       love.graphics.setColor(255,0,0)
     elseif v.name == 'objective' then
@@ -390,12 +432,16 @@ function drawObjects(objects)
       -- Magenta because I don't know what color this should be
       love.graphics.setColor(255,0,255)
     end
-    if v.name ~= 'spawn' and v.name ~= 'player' then
+    if v.name ~= 'spawn' and v.name ~= 'player' and v.name ~= 'bullet' then
       love.graphics.rectangle('fill', v.x, v.y, v.width, v.height)
     end
     if v.name == 'player' then
       love.graphics.setColor(v.colors)
       love.graphics.draw(playerImage, v.x, v.y)
+    end
+    if v.name == 'bullet' then
+      love.graphics.setColor(255,0,255)
+      love.graphics.rectangle('fill', v.x1, v.y1, v.width, v.height)
     end
   end
 end
@@ -447,6 +493,7 @@ function loadCurrentMapObjects(map)
         o.health = 30
       elseif num == 3 then
         o.name = 'objective'
+        o.buff = 30
       elseif num == 4 then
         o.name = 'ladder'
       elseif num == 6 then
@@ -472,8 +519,14 @@ function loopSpecificObjects(objects, name, f)
   end
 end
 
-function removeDeadObjects(objects)
+function removeObjects(objects)
   for i, v in pairs(objects) do
+    if v.name == 'bullet' then
+      if distance(v.x1, v.y1, player.x, player.y) > MAX_BULLET_DISTANCE then
+        objects[i] = nil
+        WORLD:remove(v)
+      end
+    end
     if v.state == 'dead' and v.name ~= 'player' then
       objects[i] = nil
       WORLD:remove(v)
@@ -489,21 +542,10 @@ end
 
 local floaters = {}
 
-function floaters.checkIfHit()
-  loopSpecificObjects(MAP_OBJECTS, 'floater', function(i, v)
-    local actualX, actualY, cols, len = WORLD:check(v, v.x, v.y)
-    for i=1, len do
-      local col = cols[i]
-      if col.other.name == 'bullet' then
-        v.hit = true
-      end
-    end
-  end)
-end
-
-function floaters.checkRadius()
-  loopSpecificObjects(MAP_OBJECTS, 'floater', function(i, v)
-    local dist = distance(v.x+v.width/2, v.y+v.height/2, player.x+player.width/2, player.y+player.height/2)
+function floaters.checkRadius(objects)
+  loopSpecificObjects(objects, 'floater', function(i, v)
+    local dist = distance(v.x+v.width/2, v.y+v.height/2,
+      player.x+player.width/2, player.y+player.height/2)
     if dist < v.radius then
       v.state = 'attack'
     else
@@ -512,32 +554,20 @@ function floaters.checkRadius()
   end)
 end
 
-function floaters.attackPlayer(dt)
-  loopSpecificObjects(MAP_OBJECTS, 'floater', function(i, v)
+function floaters.attackPlayer(objects, dt)
+  loopSpecificObjects(objects, 'floater', function(i, v)
     if v.state == 'attack' then
-      player:decreaseHealth(v.damage, dt)
+      player:decreaseHealth(false, v.damage, dt)
     end
   end)
 end
 
-function floaters.drawHomingLine()
-  loopSpecificObjects(MAP_OBJECTS, 'floater', function(i, v)
+function floaters.drawHomingLine(objects)
+  loopSpecificObjects(objects, 'floater', function(i, v)
     if v.state == 'attack' then
       love.graphics.setColor(255,0,0)
-      love.graphics.line(v.x+v.width/2, v.y+v.height/2, player.x+player.width/2, player.y+player.height/2)
-    end
-  end)
-end
-
-function floaters.decreaseHealth()
-  loopSpecificObjects(MAP_OBJECTS, 'floater', function(i, v)
-    if v.hit then
-      v.health = v.health - player.damage
-      v.hit = false
-    end
-    if v.health <= 0 then
-      v.health = 0
-      v.state = 'dead'
+      love.graphics.line(v.x+v.width/2, v.y+v.height/2,
+        player.x+player.width/2, player.y+player.height/2)
     end
   end)
 end
@@ -568,46 +598,45 @@ function love.draw()
   if player.state ~= 'dead' then
     camera:attach()
       drawObjects(MAP_OBJECTS)
-      floaters.drawHomingLine()
+      floaters.drawHomingLine(MAP_OBJECTS)
       player:drawHealthBar()
-      player:drawBullets()
     camera:detach()
   else
     love.graphics.setColor(255,0,0)
-    love.graphics.print('You have died!', love.graphics.getWidth()/2-32, love.graphics.getHeight()/2-6)
+    love.graphics.print('You have died!', love.graphics.getWidth()/2-32,
+      love.graphics.getHeight()/2-6)
   end
 end
 
 
 function love.update(dt)
   if player.state ~= 'dead' then
-    player:autoRemoveDeadBullets()
     player:move(dt)
     player:applyVelocities(dt)
     player:collision(dt)
     -- state must be updated after collision calculations
     player:updateState()
     player:jump()
-    player:shoot()
-    player:updateBullets(dt)
+    player:shoot(MAP_OBJECTS)
     
     -- apply gravity to OBJECTS
     applyGravity(MAP_OBJECTS, dt)
 
     -- debug section aka printing to console
-    debugprint()
+    -- debugprint()
 
     -- update camera position
     camera:lookAt(player.x, player.y)
 
     -- floater updates
-    floaters.checkRadius()
-    floaters.attackPlayer(dt)
-    floaters.checkIfHit()
-    floaters.decreaseHealth()
+    floaters.checkRadius(MAP_OBJECTS)
+    floaters.attackPlayer(MAP_OBJECTS, dt)
+
+    -- bullet
+    bullets.updateAll(MAP_OBJECTS, dt)
 
     -- update dead objects
-    removeDeadObjects(MAP_OBJECTS)
+    removeObjects(MAP_OBJECTS)
   end
 end
 
@@ -628,5 +657,8 @@ function love.keyreleased(key)
 
   if key == 'escape' then
     love.event.quit()
+  end
+  if key == '`' then
+    love.event.quit('restart')
   end
 end
